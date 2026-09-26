@@ -1,0 +1,51 @@
+// Smoke CLI input reader: mono IEEE-float32 RIFF/WAVE only, little-endian host.
+// Copies potentially unaligned data into caller-owned aligned sample storage.
+String, str_at = std.text
+Audio* = { samples*: Ptr<f32>, count*: usize, rate*: i32 }
+WavError* = InvalidWave | UnsupportedFormat
+DecodeError* = WavError | AllocError
+
+word = (bytes: str, offset: usize, length: usize) usize {
+    value  ::= 0;
+    factor ::= 1;
+    Range(0, length).loop((i) {
+        value  = value + bytes.ptr().read(offset + i).to_usize() * factor;
+        factor = factor * 256;
+    });
+    value
+}
+
+decode* = (a: Alloc, bytes: str) Res<Audio, DecodeError> {
+    (bytes.len >= 12).ensure(WavError.InvalidWave).try();
+    (bytes.slice(0, 4).eq("RIFF") && bytes.slice(8, 12).eq("WAVE")).ensure(WavError.InvalidWave).try();
+    end = word(bytes, 4, 4) + 8;
+    (end >= 12 && end <= bytes.len).ensure(WavError.InvalidWave).try();
+    position    ::= 12;
+    data        ::= 0;
+    length      ::= 0;
+    rate: usize ::= 0;
+    valid       ::= false;
+    loop(position + 8 <= end, (h) {
+        size  = word(bytes, position + 4, 4);
+        start = position + 8;
+        (size <= end - start).ensure(WavError.InvalidWave).try();
+        tag = bytes.slice(position, position + 4);
+        tag.eq("fmt ").then(() {
+            (size >= 16).ensure(WavError.InvalidWave).try();
+            rate  = word(bytes, start + 4, 4);
+            valid = word(bytes, start, 2) == 3 && word(bytes, start + 2, 2) == 1 &&
+                    word(bytes, start + 12, 2) == 4 && word(bytes, start + 14, 2) == 32 &&
+                    rate >= 8000 && rate <= 96000;
+        });
+        tag.eq("data").then(() { data = start; length = size; });
+        position = start + size + size % 2;
+    });
+    (position == end).ensure(WavError.InvalidWave).try();
+    (valid && data > 0 && length > 0 && length % 4 == 0).ensure(
+        WavError.UnsupportedFormat
+    ).try();
+    rate_i32 = rate.to_u64().to_i32().ok_or(WavError.UnsupportedFormat).try();
+    samples  = a.realloc<f32>(null_ptr<f32>(), length / 4).try();
+    samples.to<u8>().copy_from(bytes.ptr().offset(data), length);
+    Ok(Audio(samples: samples, count: length / 4, rate: rate_i32))
+}

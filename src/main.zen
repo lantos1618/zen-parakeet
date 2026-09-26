@@ -1,0 +1,36 @@
+Recognizer, NativeError = parakeet
+Audio, decode = parakeet.wav
+main = (env: Env) Res<i32, AllocError> {
+    a     = env.mem.alloc();
+    model = env.argv.get(1).match({Ok(path) => path, None => ""});
+    wav   = env.argv.get(2).match({Ok(path) => path, None => ""});
+    gpu   = env.argv.get(3).match({Ok(value) => value.eq("--gpu").match({true => 0, false => -1}), None => -1});
+    code ::= 1;
+    env.fs.read(a, wav).match({
+        Ok(bytes) => decode(a, bytes.view()).match({
+            Ok(audio) => Recognizer.open(a, model, gpu).match({
+                Ok(recognizer) => {
+                    owned ::= recognizer;
+                    @scope.defer(() { owned.close(); });
+                    owned.transcribe(
+                        a,
+                        audio.samples,
+                        audio.count,
+                        audio.rate
+                    ).match({
+                        Ok(text)   => { println("{}", text.view()); code = 0; },
+                        Err(error) => error.match({NativeError(detail) => { println("{}", detail.message.view()); }, _ => { println("native recognition failed"); }}),
+                    });
+                },
+                Err(error)     => error.match({NativeError(detail) => { println("{}", detail.message.view()); }, _ => { println("pass a local NeMo-compatible Parakeet GGUF model path"); }}),
+            }),
+            Err(_)    => { println(
+                "input must be mono float32 WAV at 8–96 kHz"
+            ); },
+        }),
+        Err(_)    => { println(
+            "usage: parakeet-smoke MODEL.gguf AUDIO.wav [--gpu]"
+        ); },
+    });
+    Ok(code)
+}

@@ -1,0 +1,20 @@
+Recognizer, Error = parakeet
+main = (env: Env) Res<i32, AllocError> {
+    a = env.mem.alloc();
+    result ::= 1;
+    Recognizer.open(a, "model.gguf", -1).match({
+        Ok(recognizer) => {
+            r ::= recognizer;
+            sample = a.create<f32>().try();
+            sample.write(0, 0.5);
+            r.transcribe(a, sample, 1, 16000).match({
+                Ok(text) => { println("{}", text.view()); result = 0; },
+                Err(_) => { println("recognize failed"); },
+            });
+            r.close();
+            r.close();
+        },
+        Err(_) => { println("open failed"); },
+    });
+    Ok(result)
+}

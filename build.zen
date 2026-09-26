@@ -1,0 +1,11 @@
+Builder, BuildError = std.build
+build = (b :: Builder) Res<(), BuildError> {
+    parakeet = b.lib("parakeet", {
+        src: Path("src/parakeet.zen"), libs: ["nemo_speech_asr_c"], paths: ["build/nemo-speech/lib"],
+    }).try();
+    b.exe(
+        "parakeet-smoke",
+        {src: Path("src/main.zen"), deps: [parakeet], out: Ok(Path("build/parakeet-smoke"))}
+    ).try();
+    Ok(())
+}

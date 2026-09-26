@@ -1,0 +1,177 @@
+// NVIDIA NeMo Speech native C ABI. No Objective-C or subprocess bridge.
+Ptr, null_ptr = std.mem
+String, str_at, c_text = std.text
+
+Native = c.bind("nemo_speech/asr.h", {
+    nemo_speech_asr_create* = (config: Ptr<()>, result: Ptr<()>) c_int
+    nemo_speech_asr_destroy* = (recognizer: Ptr<()>) ()
+    nemo_speech_asr_recognize_f32* = (recognizer: Ptr<()>, options: Ptr<()>, samples: Ptr<f32>, count: usize, rate: i32, result: Ptr<()>) c_int
+    nemo_speech_asr_result_alternative_count* = (result: Ptr<()>) usize
+    nemo_speech_asr_result_transcript* = (result: Ptr<()>, alternative: usize) Ptr<c_char>
+    nemo_speech_asr_result_destroy* = (result: Ptr<()>) ()
+    nemo_speech_asr_last_error* = () Ptr<c_char>
+})
+
+// Mirrors of pointer-passed native records, verified against the real header
+// in tests/native.py. Never use these as by-value C function signatures.
+Backend = { size: usize, gpu: i32 }
+Model = { size: usize, path: Ptr<c_char>, name: Ptr<c_char> }
+Startup = {
+    size: usize,
+    backend: Ptr<()>, model: Ptr<()>, streaming: Ptr<()>, decoder: Ptr<()>,
+    vad: Ptr<()>, endpointing: Ptr<()>, postproc: Ptr<()>, diar: Ptr<()>, batching: Ptr<()>,
+}
+Options = {
+    size: usize, request_id: Ptr<c_char>, language_code: Ptr<c_char>,
+    interim_results: bool, enable_word_time_offsets: bool,
+    enable_automatic_punctuation: bool, verbatim_transcripts: bool, profanity_filter: bool,
+    stop_history_eou_ms: i32, speech_contexts: Ptr<()>, speech_context_count: usize,
+    max_alternatives: i32, enable_speaker_diarization: bool, max_speaker_count: i32,
+}
+
+ConfigError* = InvalidModel | InvalidAudio | Closed | MissingResult
+NativeError* = { code*: c_int, message*: String }
+Error* = ConfigError | NativeError | AllocError
+
+copy_text = (a: Alloc, text: Ptr<c_char>) Res<String, AllocError> {
+    result ::= a.String().try();
+    (!text.is_null()).then(() {
+        bytes = text.to<u8>();
+        length ::= 0;
+        loop(bytes.read(length) != 0, (h) { length = length + 1; });
+        result.add(str_at(bytes, length)).try();
+    });
+    Ok(result)
+}
+
+failure = (a: Alloc, code: c_int) Res<NativeError, AllocError> {
+    Ok(NativeError(
+        code: code,
+        message: copy_text(a, Native.nemo_speech_asr_last_error()).try()
+    ))
+}
+
+// Single owning handle: do not copy while open. Close after outstanding calls.
+Recognizer* = {
+    handle :: Ptr<()>,
+
+    open* = (a: Alloc, model: str, gpu: i32) Res<Recognizer, Error> {
+        (model.len > 0 && !model.contains(0)).ensure(ConfigError.InvalidModel).try();
+        path = model.c_text(a).try();
+        @scope.defer(() { a.free(path.ptr()); });
+        backend = a.create<Backend>().try();
+        @scope.defer(() { a.free(backend); });
+        backend.write(0, Backend(size: backend.bytes(1), gpu: gpu));
+        spec = a.create<Model>().try();
+        @scope.defer(() { a.free(spec); });
+        spec.write(
+            0,
+            Model(
+                size: spec.bytes(1),
+                path: path.ptr().to<c_char>(),
+                name: null_ptr<c_char>()
+            )
+        );
+        startup = a.create<Startup>().try();
+        @scope.defer(() { a.free(startup); });
+        startup.write(
+            0,
+            Startup(
+                size: startup.bytes(1),
+                backend: backend.to<()>(),
+                model: spec.to<()>(),
+                streaming: null_ptr<()>(),
+                decoder: null_ptr<()>(),
+                vad: null_ptr<()>(),
+                endpointing: null_ptr<()>(),
+                postproc: null_ptr<()>(),
+                diar: null_ptr<()>(),
+                batching: null_ptr<()>()
+            )
+        );
+        output = a.create<Ptr<()>>().try();
+        @scope.defer(() { a.free(output); });
+        output.write(0, null_ptr<()>());
+        code = Native.nemo_speech_asr_create(startup.to<()>(), output.to<()>());
+        (code == 0).match({
+            false => {
+                @scope.defer(
+                    () { (!output.read(0).is_null()).then(() { Native.nemo_speech_asr_destroy(output.read(0)); }); }
+                );
+                Err(failure(a, code).try())
+            },
+            true  => {
+                (!output.read(0).is_null()).ensure(ConfigError.MissingResult).try();
+                Ok(Recognizer(handle: output.read(0)))
+            },
+        })
+    }
+
+    transcribe* = (self: @Self, a: Alloc, samples: Ptr<f32>, count: usize, rate: i32)
+                  Res<String, Error> {
+        (!self.handle.is_null()).ensure(ConfigError.Closed).try();
+        (count > 0 && !samples.is_null() && rate >= 8000 && rate <= 96000).ensure(
+            ConfigError.InvalidAudio
+        ).try();
+        options = a.create<Options>().try();
+        @scope.defer(() { a.free(options); });
+        options.write(
+            0,
+            Options(
+                size: options.bytes(1),
+                request_id: null_ptr<c_char>(),
+                language_code: null_ptr<c_char>(),
+                interim_results: false,
+                enable_word_time_offsets: false,
+                enable_automatic_punctuation: false,
+                verbatim_transcripts: false,
+                profanity_filter: false,
+                stop_history_eou_ms: 0,
+                speech_contexts: null_ptr<()>(),
+                speech_context_count: 0,
+                max_alternatives: 1,
+                enable_speaker_diarization: false,
+                max_speaker_count: 0
+            )
+        );
+        output = a.create<Ptr<()>>().try();
+        @scope.defer(() { a.free(output); });
+        output.write(0, null_ptr<()>());
+        @scope.defer(
+            () { (!output.read(0).is_null()).then(() { Native.nemo_speech_asr_result_destroy(output.read(0)); }); }
+        );
+        code = Native.nemo_speech_asr_recognize_f32(
+            self.handle,
+            options.to<()>(),
+            samples,
+            count,
+            rate,
+            output.to<()>()
+        );
+        (code == 0).match({
+            false => Err(failure(a, code).try()),
+            true  => {
+                result = output.read(0);
+                (!result.is_null()).ensure(ConfigError.MissingResult).try();
+                (Native.nemo_speech_asr_result_alternative_count(
+                    result
+                ) > 0).match({
+                    true  => Ok(
+                        copy_text(
+                            a,
+                            Native.nemo_speech_asr_result_transcript(result, 0)
+                        ).try()
+                    ),
+                    false => Ok(a.String().try()),
+                })
+            },
+        })
+    }
+
+    close* = (self :: @Self) () {
+        (!self.handle.is_null()).then(() {
+            Native.nemo_speech_asr_destroy(self.handle);
+            self.handle = null_ptr<()>();
+        });
+    }
+}
