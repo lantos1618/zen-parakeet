@@ -103,3 +103,18 @@ required normal host access outside the execution sandbox; sandboxed speech
 produced empty audio and sandboxed Metal could not create a command queue.
 `python3 tests/wav.py` additionally checks seven independent RIFF fixtures,
 including malformed sizes and odd-sized chunk padding.
+
+## Live dictation
+
+The pinned Parakeet TDT v3 model has an offline encoder. Although the NeMo C
+header exposes `StreamingRecognize`, attempting it with this model returns
+`this transducer encoder is offline-only and cannot serve StreamingRecognize`.
+An installed API does not imply every model supports it.
+
+For live partial text, zen-tui periodically calls `Recognizer.transcribe` on
+the growing recording, retains the recognizer on its inference actor, and
+replaces the partial hypothesis as more context arrives. It admits only one
+inference at a time and runs a final pass after capture stops. This is repeated
+full-context decoding within a bounded recording, not cached incremental model
+execution. Partial words can change and latency depends on hardware and audio
+length. A cache-aware streaming model would require a separate stream adapter.
