@@ -111,13 +111,13 @@ header exposes `StreamingRecognize`, attempting it with this model returns
 `this transducer encoder is offline-only and cannot serve StreamingRecognize`.
 An installed API does not imply every model supports it.
 
-For live partial text, zen-tui periodically calls `Recognizer.transcribe` on
-the growing recording, retains the recognizer on its inference actor, and
-replaces the partial hypothesis as more context arrives. It admits only one
-inference at a time and runs a final pass after capture stops. This is repeated
-full-context decoding within a bounded recording, not cached incremental model
-execution. Partial words can change and latency depends on hardware and audio
-length. A cache-aware streaming model would require a separate stream adapter.
+[zen-voice](https://github.com/lantos1618/zen-voice) owns the inference actor,
+keeps a cached recognizer, and admits one request at a time. Zen Code supplies
+growing audio prefixes for partial hypotheses and commits finalized segments.
+This is repeated full-context decoding within bounded segments, not cached
+incremental model execution. Partial words can change and latency depends on
+hardware and audio length. A cache-aware streaming model would require a
+separate stream adapter.
 
 ## Performance baseline
 
