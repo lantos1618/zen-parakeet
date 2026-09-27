@@ -1,0 +1,140 @@
+// Benchmark-only Darwin monotonic clock; no application runtime dependency.
+Recognizer, NativeError, Error = parakeet
+Audio, decode = parakeet.wav
+Timespec = { seconds: i64, nanoseconds: i64 }
+Clock = c.bind("time.h", { clock_gettime* = (id: i32, result: Ptr<()>) i32 })
+
+stamp = (clock: Ptr<Timespec>) f64 {
+    // Darwin's SDK _time.h defines CLOCK_MONOTONIC as 6.
+    (Clock.clock_gettime(6, clock.to<()>()) == 0).match({
+        true  => {
+            time    = clock.read(0);
+            seconds = time.seconds.to_i32().match({Ok(value) => value.to_f64(), None => -1.0});
+            nanos   = time.nanoseconds.to_i32().match({Ok(value) => value.to_f64(), None => -1.0});
+            (seconds >= 0.0 && nanos >= 0.0).match({true => seconds + nanos / 1000000000.0, false => -1.0})
+        },
+        false => -1.0,
+    })
+}
+
+report_error = (env: Env, error: Error) () {
+    error.match({
+        NativeError(detail) => { println("ERROR\t{}", detail.message.view()); },
+        _                   => { println("ERROR\tnative recognition failed"); },
+    });
+}
+
+measure = (
+    env        : Env,
+    recognizer : Recognizer,
+    audio      : Audio,
+    clock      : Ptr<Timespec>,
+    phase      : str,
+    seconds    : usize,
+    iteration  : usize
+) bool {
+    scratch ::= env.mem.alloc();
+    started = stamp(clock);
+    result  = recognizer.transcribe(
+        scratch,
+        audio.samples,
+        audio.count,
+        audio.rate
+    );
+    ended   = stamp(clock);
+    (started >= 0.0 && ended >= started).match({
+        false => { println("ERROR\tmonotonic clock failed"); false },
+        true  => result.match({
+            Err(error) => { report_error(env, error); false },
+            Ok(text)   => {
+                println(
+                    "SAMPLE\t{}\t{}\t{}\t{}\t{}",
+                    phase,
+                    seconds,
+                    iteration,
+                    (ended - started) * 1000.0,
+                    text.len()
+                );
+                (iteration == 0).then(
+                    () { println(
+                        "TEXT\t{}\t{}\t{}",
+                        phase,
+                        seconds,
+                        text.view()
+                    ); }
+                );
+                true
+            },
+        }),
+    })
+}
+
+main = (env: Env) Res<i32, AllocError> {
+    arena ::= env.mem.alloc();
+    model   = env.argv.get(1).match({Ok(v) => v, None => ""});
+    backend = env.argv.get(2).match({Ok(v) => v, None => "cpu"});
+    gpu     = backend.eq("metal").match({true => 0, false => -1});
+    clock   = arena.create<Timespec>().try();
+    clips ::= arena.Vec<Audio>();
+    good  ::= true;
+    Range(0, 4).loop((i) {
+        path = env.argv.get(i + 3).match({Ok(v) => v, None => ""});
+        env.fs.read(arena, path).match({
+            Err(_)    => { println(
+                "ERROR\tcannot read fixture {}",
+                path
+            ); good = false; },
+            Ok(bytes) => decode(arena, bytes.view()).match({
+                Err(_)    => { println(
+                    "ERROR\tcannot decode fixture {}",
+                    path
+                ); good = false; },
+                Ok(audio) => { clips.add(audio).try(); },
+            }),
+        });
+    });
+    good.match({
+        false => Ok(2),
+        true  => {
+            start  = stamp(clock);
+            opened = Recognizer.open(arena, model, gpu);
+            end    = stamp(clock);
+            opened.match({
+                Err(error) => { report_error(env, error); Ok(3) },
+                Ok(value)  => {
+                    recognizer ::= value;
+                    @scope.defer(() { recognizer.close(); });
+                    println("LOAD\t{}\t{}", backend, (end - start) * 1000.0);
+                    good = start >= 0.0 && end >= start;
+                    clips.get(2).when_ok((audio) { good = measure(env, recognizer, audio, clock, "first", 8, 0) && good; });
+                    Range(0, 4).loop((i) {
+                        seconds: usize = i.match({0 => 1, 1 => 4, 2 => 8, _ => 15});
+                        clips.get(i).when_ok((audio) {
+                            good = measure(
+                                env,
+                                recognizer,
+                                audio,
+                                clock,
+                                "prime",
+                                seconds,
+                                0
+                            ) && good;
+                            Range(0, 5).loop((iteration) {
+                                good = measure(
+                                    env,
+                                    recognizer,
+                                    audio,
+                                    clock,
+                                    "warm",
+                                    seconds,
+                                    iteration
+                                ) && good;
+                            });
+                        });
+                    });
+                    Ok(good.match({true => 0, false => 4}))
+                },
+            })
+        },
+    })
+}

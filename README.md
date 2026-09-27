@@ -118,3 +118,10 @@ inference at a time and runs a final pass after capture stops. This is repeated
 full-context decoding within a bounded recording, not cached incremental model
 execution. Partial words can change and latency depends on hardware and audio
 length. A cache-aware streaming model would require a separate stream adapter.
+
+## Performance baseline
+
+[Benchmark instructions](benchmarks/README.md) and
+[measured results](benchmarks/RESULTS.md) separate process startup, first decode,
+and warm CPU/Metal inference. These are timings on synthesized fixtures, not
+a speech-recognition accuracy benchmark or end-to-end dictation latency.
