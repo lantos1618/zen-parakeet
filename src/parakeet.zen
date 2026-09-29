@@ -168,7 +168,7 @@ Recognizer* = {
         })
     }
 
-    close* = (self :: @Self) () {
+    close* = (self :: @Self) {
         (!self.handle.is_null()).then(() {
             Native.nemo_speech_asr_destroy(self.handle);
             self.handle = null_ptr<()>();
